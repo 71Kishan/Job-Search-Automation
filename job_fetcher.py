@@ -1,461 +1,260 @@
 import os
-import json
+import sys
 import time
-import requests
+import json
 import traceback
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+import requests
+import gspread
+from google import genai
 
-# Google Sheets Library
-try:
-    import gspread
-    GSPREAD_AVAILABLE = True
-except ImportError:
-    GSPREAD_AVAILABLE = False
+# ==============================================================================
+# 1. DIRECTORY & CONFIGURATION
+# ==============================================================================
+BASE_DIR = r"LOCATION_OF_DIRECTORY"
+CREDENTIALS_FILE = os.path.join(BASE_DIR, "service_account.json")
+SPREADSHEET_NAME = "GOOGLE_SHEET_NAME"
+SPREADSHEET_URL = "GOOGLE_SHEET_URL"
 
-# Google GenAI Library
-try:
-    from google import genai
-    GENAI_AVAILABLE = True
-except ImportError:
-    GENAI_AVAILABLE = False
-
-# --- CONFIGURATION ---
-SPREADSHEET_NAME = "Master job Search Tracker"
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1rZQz-4MwJUSJr7B2mTKs89mguS4lmYuvu76GX-YjUeY/edit?gid=0#gid=0"
-CREDENTIALS_FILE = "service_account.json"
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
+GEMINI_API_KEY = "GEMINI_API_KEY"
+MODEL_NAME = "gemma-4-26b-a4b-it"
+MAX_JOBS_PER_RUN = 15
+LOCATION = "Ahmedabad, Gujarat"
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 SEARCH_KEYWORDS = [
-    "IT Technical Support",
-    "Technical Support Engineer",
-    "Desktop Support Engineer",
-    "Service Desk Analyst",
-    "Systems Administrator",
-    "Network Engineer",
-    "Network Support Specialist",
-    "Cybersecurity Analyst",
-    "SOC Analyst",
-    "Network Security Analyst",
-    "IT Operations Analyst",
-    "Technical Account Manager"
+    "IT Technical Support", "Systems Administrator", "Network Engineer",
+    "Cybersecurity Analyst", "Cloud Operations", "L2 Support"
 ]
 
-LOCATION = "Ahmedabad, Gujarat"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-}
-
-# Candidate profile context for AI generation & matching
 CANDIDATE_PROFILE = """
-Candidate Details:
-- Education: Undergraduate in Computer Networking and Cybersecurity.
-- Background: Technical Support Specialist / IT Technical Support Representative with experience in hardware/software troubleshooting, network administration, active directory, incident resolution, and customer support.
+Kishan Panchal - IT Professional & Systems Administrator
+- Experience: 2+ years in IT, Systems Admin, Networking, Cloud Infrastructure.
+- Key Metrics: 95% CSAT, 90% First Call Resolution.
+- Technical Skills: Networking (OSPF, BGP, VLANs, DNS), OS (Windows, Linux), Cloud (Azure, AWS, GCP).
+- Preferences: Open to fully remote roles and willing to relocate for the right opportunity.
 """
 
-
-def select_top_jobs(df, max_jobs=25):
-    """Uses Gemma to select the top N best-matching jobs from the scraped dataframe."""
-    if len(df) <= max_jobs:
-        return df
-
-    if not GENAI_AVAILABLE or not GEMINI_API_KEY:
-        print(f"\n[AI Filter] API not available. Taking the first {max_jobs} jobs.")
-        return df.head(max_jobs)
-
-    try:
-        print(f"\n[AI Filter] Selecting the top {max_jobs} best-matching jobs out of {len(df)} total jobs...")
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        job_summaries = []
-        for idx, row in df.reset_index(drop=True).iterrows():
-            job_summaries.append(f"Index: {idx}, Role: {row['Role']}, Company: {row['Company']}")
-        
-        job_text = "\n".join(job_summaries)
-        
-        prompt = f"""
-        {CANDIDATE_PROFILE}
-
-        Here is a list of available job postings:
-        {job_text}
-
-        Select the top {max_jobs} jobs that are the absolute best match for the candidate's profile (focusing on IT Support, Technical Support, Networking, and Cybersecurity roles).
-        Return ONLY a JSON list of the integer indices corresponding to the selected jobs, formatted strictly as:
-        [0, 2, 5, 10, ...]
-        """
-
-        response = client.models.generate_content(
-            model='gemma-4-26b-a4b-it',
-            contents=prompt,
-        )
-
-        text = response.text.strip()
-        if text.startswith("```json"):
-            text = text.replace("```json", "").replace("```", "").strip()
-        
-        selected_indices = json.loads(text)
-        if isinstance(selected_indices, list) and len(selected_indices) > 0:
-            df_reset = df.reset_index(drop=True)
-            valid_indices = [i for i in selected_indices if isinstance(i, int) and 0 <= i < len(df_reset)]
-            if valid_indices:
-                filtered_df = df_reset.iloc[valid_indices]
-                print(f"[AI Filter] Successfully selected {len(filtered_df)} top-matching jobs.")
-                return filtered_df
-
-    except Exception as e:
-        print(f"[AI Filter Note] Failed to filter via AI: {e}. Falling back to top {max_jobs} jobs.")
-    
-    return df.head(max_jobs)
-
-
-def generate_ai_content(role, company):
-    """Generates an email subject, tailored cold email, and 3 resume bullets using Gemma API."""
-    if not GENAI_AVAILABLE or not GEMINI_API_KEY:
-        return "", "", ""
-
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        prompt = f"""
-        {CANDIDATE_PROFILE}
-
-        Target Job Role: {role}
-        Target Company: {company}
-
-        Generate three outputs:
-        1. EMAIL_SUBJECT: A compelling, professional subject line for a cold email applying to this exact position.
-        2. COLD_EMAIL: A professional, concise 3-sentence cold email pitching the candidate for this exact position.
-        3. RESUME_BULLETS: Exactly 3 impactful, tailored resume bullet points highlighting relevant skill sets for this role.
-
-        Return the result strictly formatted in JSON like this:
-        {{
-            "email_subject": "...",
-            "cold_email": "...",
-            "resume_bullets": "• Bullet 1\\n• Bullet 2\\n• Bullet 3"
-        }}
-        """
-
-        response = client.models.generate_content(
-            model='gemma-4-26b-a4b-it',
-            contents=prompt,
-        )
-
-        text = response.text.strip()
-        if text.startswith("```json"):
-            text = text.replace("```json", "").replace("```", "").strip()
-
-        data = json.loads(text)
-        return data.get("email_subject", ""), data.get("cold_email", ""), data.get("resume_bullets", "")
-
-    except Exception as e:
-        print(f"    [AI Generation Note] Skipped AI draft for {role}: {e}")
-        return "", "", ""
-
-
+# ==============================================================================
+# 2. SCRAPERS (Naukri, Indeed, LinkedIn, WorkIndia)
+# ==============================================================================
 def fetch_naukri_jobs(page, keyword, location):
-    """Fetch Naukri jobs via Playwright live DOM extraction."""
     jobs = []
-    city = location.split(",")[0].strip().lower()
-    formatted_kw = keyword.lower().replace(" ", "-")
-    url = f"https://www.naukri.com/{formatted_kw}-jobs-in-{city}?freshness=1"
-
+    url = f"https://www.naukri.com/{keyword.lower().replace(' ', '-')}-jobs-in-{location.split(',')[0].strip().lower()}?freshness=1"
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=25000)
         page.wait_for_timeout(3500)
-        page.evaluate("window.scrollBy(0, 400)")
-
         scraped = page.evaluate("""() => {
-            const items = [];
-            const cards = document.querySelectorAll('div.srp-jobtuple-wrapper, article.jobTuple, div.cust-job-tuple, [data-job-id]');
-            
-            cards.forEach(card => {
+            return Array.from(document.querySelectorAll('div.srp-jobtuple-wrapper, article.jobTuple, [data-job-id]')).map(card => {
                 const titleElem = card.querySelector('a.title, [class*="title"]');
-                const companyElem = card.querySelector('a.comp-name, [class*="comp-name"], [class*="company"]');
-                
-                if (titleElem && titleElem.href) {
-                    items.push({
-                        title: titleElem.innerText.split('\\n')[0].trim(),
-                        company: companyElem ? companyElem.innerText.trim() : 'N/A',
-                        url: titleElem.href
-                    });
-                }
-            });
-            return items;
+                const compElem = card.querySelector('a.comp-name, [class*="comp-name"]');
+                return titleElem && titleElem.href ? {title: titleElem.innerText.split('\\n')[0].trim(), company: compElem ? compElem.innerText.trim() : 'N/A', url: titleElem.href} : null;
+            }).filter(Boolean);
         }""")
-
         for item in scraped:
-            if item["title"] and item["url"]:
-                jobs.append({
-                    "Date Applied": datetime.now().strftime("%Y-%m-%d"),
-                    "Company": item["company"],
-                    "Role": item["title"],
-                    "Location": location,
-                    "URL": item["url"]
-                })
+            jobs.append({"Date Applied": datetime.now().strftime("%Y-%m-%d"), "Company": item["company"], "Role": item["title"], "Location": location, "URL": item["url"]})
     except Exception as e:
-        print(f"    [Naukri Error] {e}")
-
+        print(f"  [Naukri Warn] {e}")
     return jobs
 
-
 def fetch_indeed_jobs(page, keyword, location):
-    """Fetch Indeed jobs via Playwright live DOM extraction."""
     jobs = []
-    city = location.split(",")[0].strip()
-    formatted_kw = keyword.replace(" ", "+")
-    url = f"https://in.indeed.com/jobs?q={formatted_kw}&l={city}"
-
+    url = f"https://in.indeed.com/jobs?q={keyword.replace(' ', '+')}&l={location.split(',')[0].strip()}"
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=25000)
         page.wait_for_timeout(3000)
-
         scraped = page.evaluate("""() => {
-            const items = [];
-            const cards = document.querySelectorAll('div.job_seen_beacon, td.resultContent, div.cardOutline, div.jobContainer, [data-jk]');
-            
-            cards.forEach(card => {
-                const titleElem = card.querySelector('h2.jobTitle, a[id^="job_"], a.jxf');
-                const companyElem = card.querySelector('[data-testid="company-name"], .companyName');
-                const linkElem = card.querySelector('a[href*="/rc/clk"], a[href*="jk="], h2.jobTitle a');
-                
-                if (titleElem && linkElem) {
-                    items.push({
-                        title: titleElem.innerText.split('\\n')[0].trim(),
-                        company: companyElem ? companyElem.innerText.trim() : 'N/A',
-                        url: linkElem.href
-                    });
-                }
-            });
-            return items;
+            return Array.from(document.querySelectorAll('div.cardOutline, .job_seen_beacon')).map(card => {
+                const titleElem = card.querySelector('h2.jobTitle span, [class*="jobTitle"]');
+                const compElem = card.querySelector('[data-testid="company-name"], .companyName');
+                const linkElem = card.querySelector('a.jcs-JobTitle, h2.jobTitle a');
+                return titleElem && linkElem ? {
+                    title: titleElem.innerText.trim(), 
+                    company: compElem ? compElem.innerText.trim() : 'N/A', 
+                    url: linkElem.href
+                } : null;
+            }).filter(Boolean);
         }""")
-
         for item in scraped:
-            if item["title"] and item["url"]:
-                jobs.append({
-                    "Date Applied": datetime.now().strftime("%Y-%m-%d"),
-                    "Company": item["company"],
-                    "Role": item["title"],
-                    "Location": city,
-                    "URL": item["url"]
-                })
+            jobs.append({"Date Applied": datetime.now().strftime("%Y-%m-%d"), "Company": item["company"], "Role": item["title"], "Location": location, "URL": item["url"]})
     except Exception as e:
-        print(f"    [Indeed Error] {e}")
-
+        print(f"  [Indeed Warn] {e}")
     return jobs
 
+def fetch_workindia_jobs(page, keyword, location):
+    jobs = []
+    city_slug = location.split(',')[0].strip().lower()
+    url = f"https://www.workindia.in/jobs/{keyword.lower().replace(' ', '-')}-jobs-in-{city_slug}/"
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=25000)
+        page.wait_for_timeout(3000)
+        scraped = page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('.job-card, [class*="JobCard"]')).map(card => {
+                const titleElem = card.querySelector('h3, [class*="title"]');
+                const compElem = card.querySelector('.company-name, [class*="company"]');
+                const linkElem = card.querySelector('a');
+                return titleElem && linkElem ? {
+                    title: titleElem.innerText.trim(), 
+                    company: compElem ? compElem.innerText.trim() : 'N/A', 
+                    url: linkElem.href.startsWith('http') ? linkElem.href : 'https://www.workindia.in' + linkElem.href
+                } : null;
+            }).filter(Boolean);
+        }""")
+        for item in scraped:
+            jobs.append({"Date Applied": datetime.now().strftime("%Y-%m-%d"), "Company": item["company"], "Role": item["title"], "Location": location, "URL": item["url"]})
+    except Exception as e:
+        print(f"  [WorkIndia Warn] {e}")
+    return jobs
 
 def fetch_linkedin_jobs(keyword, location):
-    """Fetch LinkedIn listings via public API."""
     jobs = []
-    city = location.split(",")[0].strip()
-    formatted_kw = keyword.replace(" ", "%20")
-    url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={formatted_kw}&location={city}&f_TPR=r86400&start=0"
-    
+    url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={keyword.replace(' ', '%20')}&location={location.split(',')[0].strip()}&f_TPR=r86400&start=0"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            cards = soup.find_all("li")
-            for card in cards:
-                title_elem = card.find("h3", class_="base-search-card__title")
-                company_elem = card.find("h4", class_="base-search-card__subtitle")
-                link_elem = card.find("a", class_="base-card__full-link")
-
-                if title_elem and company_elem and link_elem:
-                    jobs.append({
-                        "Date Applied": datetime.now().strftime("%Y-%m-%d"),
-                        "Company": company_elem.text.strip(),
-                        "Role": title_elem.text.strip(),
-                        "Location": city,
-                        "URL": link_elem["href"].split("?")[0]
-                    })
+            for card in soup.find_all("li"):
+                title, comp, link = card.find("h3"), card.find("h4"), card.find("a", class_="base-card__full-link")
+                if title and comp and link:
+                    jobs.append({"Date Applied": datetime.now().strftime("%Y-%m-%d"), "Company": comp.text.strip(), "Role": title.text.strip(), "Location": location, "URL": link["href"].split("?")[0]})
     except Exception as e:
-        print(f"    [LinkedIn Error] {e}")
+        print(f"  [LinkedIn Warn] {e}")
     return jobs
 
-
-def fetch_workindia_jobs(keyword, location):
-    """Fetch WorkIndia listings via direct HTTP requests."""
-    jobs = []
-    city = location.split(",")[0].strip().lower()
-    formatted_kw = keyword.lower().replace(" ", "%20")
-    url = f"https://www.workindia.in/jobs-in-{city}/?q={formatted_kw}"
-    
+def scrape_job_description(url):
+    """Visits the job URL and extracts the actual job description text."""
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            cards = soup.find_all("a", href=True)
-            for card in cards:
-                href = card.get("href", "")
-                if "/job/" in href or "/jobs/" in href:
-                    title = card.text.strip().split("\n")[0]
-                    if title and len(title) > 3:
-                        full_url = "https://www.workindia.in" + href if href.startswith("/") else href
-                        jobs.append({
-                            "Date Applied": datetime.now().strftime("%Y-%m-%d"),
-                            "Company": "Direct Employer",
-                            "Role": title,
-                            "Location": city.capitalize(),
-                            "URL": full_url
-                        })
+        soup = BeautifulSoup(res.text, "html.parser")
+        
+        if "linkedin.com" in url:
+            desc_div = soup.find("div", class_="show-more-less-html__markup")
+            if desc_div: return desc_div.get_text(separator=" ", strip=True)
+        elif "naukri.com" in url:
+            desc_div = soup.find("div", class_="job-desc")
+            if desc_div: return desc_div.get_text(separator=" ", strip=True)
+            
+        paragraphs = soup.find_all("p")
+        text = " ".join([p.get_text(strip=True) for p in paragraphs])
+        return text[:3000] if text else "Description not available."
     except Exception as e:
-        print(f"    [WorkIndia Error] {e}")
-    return jobs
+        return "Description not available."
 
+# ==============================================================================
+# 3. AI PROCESSING & GOOGLE SHEETS SYNC (WITH SMART DEDUPLICATION)
+# ==============================================================================
+def process_and_sync(df):
+    if not os.path.exists(CREDENTIALS_FILE):
+        return print("[System] service_account.json missing. Skipping sheet sync.")
+    
+    gc = gspread.service_account(filename=CREDENTIALS_FILE)
+    worksheet = gc.open_by_url(SPREADSHEET_URL).sheet1
+    
+    # Grab existing data from the sheet to prevent re-processing
+    all_sheet_rows = worksheet.get_all_values()
+    existing_urls = set()
+    existing_jobs_set = set()
+    
+    if len(all_sheet_rows) > 1:
+        for row in all_sheet_rows[1:]: # Skip header
+            if len(row) >= 3:
+                url_val = row[4].strip().lower() if len(row) > 4 else ""
+                comp_val = row[1].strip().lower() if len(row) > 1 else ""
+                role_val = row[2].strip().lower() if len(row) > 2 else ""
+                
+                if url_val:
+                    existing_urls.add(url_val)
+                if comp_val and role_val:
+                    existing_jobs_set.add((comp_val, role_val))
 
-def update_google_sheet(df):
-    """Appends NEW top-matching jobs safely and generates AI email subjects, cold emails & resume bullets."""
-    if not GSPREAD_AVAILABLE:
-        print("\n[Google Sheets] 'gspread' library not installed. Skipping Google Sheet sync.")
-        return
+    # Clean incoming dataframe
+    df = df.drop_duplicates(subset=['URL'])
+    df['temp_comp'] = df['Company'].str.lower().str.strip()
+    df['temp_role'] = df['Role'].str.lower().str.strip()
+    df['temp_url'] = df['URL'].str.lower().str.strip()
 
-    downloads_path = os.path.expanduser("~/Downloads")
-    json_path = os.path.join(downloads_path, CREDENTIALS_FILE)
+    # Filter out jobs that match existing URLs OR existing Company+Role pairs
+    filtered_jobs = []
+    for _, row in df.iterrows():
+        is_url_dup = row['temp_url'] in existing_urls
+        is_job_dup = (row['temp_comp'], row['temp_role']) in existing_jobs_set
+        
+        if not is_url_dup and not is_job_dup:
+            filtered_jobs.append(row)
 
-    if not os.path.exists(json_path) and not os.path.exists(CREDENTIALS_FILE):
-        print(f"\n[Google Sheets] Credentials file '{CREDENTIALS_FILE}' not found. Skipping Google Sheet sync.")
-        return
+    if not filtered_jobs:
+        return print("[System] No new unique jobs found today. Everything is already tracked!")
 
-    creds_file = json_path if os.path.exists(json_path) else CREDENTIALS_FILE
+    new_df = pd.DataFrame(filtered_jobs).drop_duplicates(subset=['temp_comp', 'temp_role']).head(MAX_JOBS_PER_RUN)
+    
+    if new_df.empty:
+        return print("[System] No new unique jobs found after cleanup.")
 
-    try:
-        gc = gspread.service_account(filename=creds_file)
-
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    rows_to_append = []
+    
+    print(f"\n[AI] Tailoring {len(new_df)} genuinely new IT jobs...")
+    for _, job in new_df.iterrows():
         try:
-            sh = gc.open_by_url(SPREADSHEET_URL)
-        except Exception:
-            sh = gc.open(SPREADSHEET_NAME)
-
-        worksheet = sh.sheet1
-        existing_rows = worksheet.get_all_values()
-
-        cleaned_df = df.fillna("").astype(str)
-
-        # Updated headers with "Email Subject" placed right before "Tailored Cold Email"
-        default_headers = [
-            "Date Applied", "Company", "Role", "Location", "URL", 
-            "Email Subject", "Tailored Cold Email", "Tailored Resume Bullets", "Status", "Follow-Up Date"
-        ]
-
-        # Case 1: Sheet is empty
-        if not existing_rows:
-            header = default_headers
-            worksheet.update('A1', [header])
-            existing_urls = set()
-        else:
-            header = existing_rows[0]
-            try:
-                url_col_idx = [h.strip().lower() for h in header].index("url")
-                existing_urls = set(row[url_col_idx].strip() for row in existing_rows[1:] if len(row) > url_col_idx and row[url_col_idx].strip())
-            except ValueError:
-                existing_urls = set()
-
-        # Filter out already saved URLs
-        new_jobs_df = cleaned_df[~cleaned_df["URL"].astype(str).str.strip().isin(existing_urls)]
-
-        if new_jobs_df.empty:
-            print("\n[Google Sheets] No new unique jobs found today. Your sheet is up to date!")
-            return
-
-        # Cap to top 25 best-matching roles using AI evaluation
-        new_jobs_df = select_top_jobs(new_jobs_df, max_jobs=25)
-
-        print(f"\n[AI Content Generator] Generating email subjects, cold emails & resume bullets for {len(new_jobs_df)} top-matching jobs...")
-
-        rows_to_append = []
-        for idx, (_, job) in enumerate(new_jobs_df.iterrows(), 1):
-            role = job.get("Role", "")
-            company = job.get("Company", "")
-
-            # Generate AI content for each selected listing
-            subject_draft, email_draft, bullets_draft = generate_ai_content(role, company)
-
-            job_dict = job.to_dict()
-            job_dict["Status"] = "New"
-            job_dict["Email Subject"] = subject_draft
-            job_dict["Tailored Cold Email"] = email_draft
-            job_dict["Tailored Resume Bullets"] = bullets_draft
-            job_dict["Follow-Up Date"] = "Pending"
-
-            new_row = [str(job_dict.get(col_name, "")) for col_name in header]
-            rows_to_append.append(new_row)
-
-            if idx % 5 == 0:
-                print(f"    Processed AI content for {idx}/{len(new_jobs_df)} jobs...")
-                time.sleep(1)  # Prevent rate limits
-
+            print(f"  Fetching details for: {job['Company']} - {job['Role']}...")
+            job_description = scrape_job_description(job['URL'])
+            
+            prompt = f"""
+            You are an expert technical resume writer. I am applying for the {job['Role']} position at {job['Company']}.
+            
+            Candidate Background: {CANDIDATE_PROFILE}
+            
+            Here is the actual Job Description:
+            {job_description}
+            
+            First, identify the top 3 core technical requirements from the Job Description. 
+            Then, write exactly 3 tailored resume bullet points mapping my background to those specific requirements.
+            
+            CRITICAL RULES:
+            1. DO NOT use generic introductory templates like "Resolved complex hardware/software issues".
+            2. Vary the sentence structure of every single bullet point.
+            3. Use the exact keywords found in the Job Description text provided above.
+            
+            Return JSON strictly formatted: {{"email_subject": "...", "cold_email": "100-word email highlighting Cloud/Networking and 95% CSAT", "resume_bullets": "• Bullet 1\\n• Bullet 2\\n• Bullet 3"}}
+            """
+            
+            res = json.loads(client.models.generate_content(model=MODEL_NAME, contents=prompt).text.replace("```json", "").replace("```", "").strip())
+            
+            rows_to_append.append([
+                job["Date Applied"], job["Company"], job["Role"], job["Location"], job["URL"],
+                res.get("email_subject", ""), res.get("cold_email", ""), res.get("resume_bullets", ""), "New", "Pending"
+            ])
+            time.sleep(1.5)
+        except Exception as e:
+            print(f"  [AI Warn] Failed to process {job['Company']}: {e}")
+            continue
+    
+    if rows_to_append:
         worksheet.append_rows(rows_to_append)
-        print(f"\n[Google Sheets] Successfully appended {len(rows_to_append)} top-matching jobs with AI-generated content!")
-
-    except Exception as e:
-        print(f"\n[Google Sheets Error] Failed to update: {e}")
-        print("Detailed traceback:")
-        traceback.print_exc()
-
+        print(f"[Success] Appended {len(rows_to_append)} tailored jobs to Master Sheet.")
 
 def main():
     all_jobs = []
-    print(f"Starting Multi-Platform Job Fetcher for {LOCATION}...\n")
-
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled"]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720}
-        )
-        page = context.new_page()
-        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
+        browser = p.chromium.launch(headless=False)
+        page = browser.new_page()
         for kw in SEARCH_KEYWORDS:
-            print(f"\n--- Searching: {kw} ---")
-
-            # 1. Naukri
-            naukri_res = fetch_naukri_jobs(page, kw, LOCATION)
-            print(f"  [Naukri.com] {len(naukri_res)} jobs")
-            all_jobs.extend(naukri_res)
-
-            # 2. Indeed
-            indeed_res = fetch_indeed_jobs(page, kw, LOCATION)
-            print(f"  [Indeed] {len(indeed_res)} jobs")
-            all_jobs.extend(indeed_res)
-
-            # 3. LinkedIn
-            linkedin_res = fetch_linkedin_jobs(kw, LOCATION)
-            print(f"  [LinkedIn] {len(linkedin_res)} jobs")
-            all_jobs.extend(linkedin_res)
-
-            # 4. WorkIndia
-            workindia_res = fetch_workindia_jobs(kw, LOCATION)
-            print(f"  [WorkIndia] {len(workindia_res)} jobs")
-            all_jobs.extend(workindia_res)
-
-            time.sleep(1)
-
+            print(f"Searching keyword: {kw}")
+            all_jobs.extend(fetch_naukri_jobs(page, kw, LOCATION))
+            all_jobs.extend(fetch_indeed_jobs(page, kw, LOCATION))
+            all_jobs.extend(fetch_workindia_jobs(page, kw, LOCATION))
+            all_jobs.extend(fetch_linkedin_jobs(kw, LOCATION))
         browser.close()
 
     if all_jobs:
         df = pd.DataFrame(all_jobs)
-        df = df.drop_duplicates(subset=["URL"])
-
-        # Save local CSV backup
-        today_str = datetime.now().strftime("%Y%m%d")
-        downloads_path = os.path.expanduser("~/Downloads")
-        output_file = os.path.join(downloads_path, f"jobs_{today_str}.csv")
-        df.to_csv(output_file, index=False)
-        print(f"\nSuccessfully scraped {len(df)} total unique jobs!")
-        print(f"CSV saved to: {output_file}")
-
-        # Sync with Google Sheets & generate AI drafts for top matches
-        update_google_sheet(df)
+        df.to_csv(os.path.join(BASE_DIR, f"it_jobs_{datetime.now().strftime('%Y%m%d')}.csv"), index=False)
+        process_and_sync(df)
     else:
-        print("\nNo jobs scraped across platforms.")
-
+        print("[System] No jobs found across any platform.")
 
 if __name__ == "__main__":
     main()
