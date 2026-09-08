@@ -32,9 +32,10 @@ SEARCH_KEYWORDS = [
 
 CANDIDATE_PROFILE = """
 Kishan Panchal - IT Professional & Systems Administrator
-- Experience: 2+ years in IT, Systems Admin, Networking, Cloud Infrastructure.
-- Key Metrics: 95% CSAT, 90% First Call Resolution.
-- Technical Skills: Networking (OSPF, BGP, VLANs, DNS), OS (Windows, Linux), Cloud (Azure, AWS, GCP).
+- Experience: 2+ years in IT support, systems, networking, and infrastructure-focused work.
+- Key Metrics: 95% CSAT, 90% First Call Resolution, 95% system performance efficiency, and 30% reduction in average response time through workflow documentation.
+- Technical Skills: Networking (TCP/IP, VLANs, DNS, DHCP, infrastructure cabling), OS (Windows, Linux/Unix), Python/BASH automation, system hardening, endpoint protection, Git/GitHub, Jira, ServiceNow, and M365.
+- Projects: Network latency analysis, cross-platform system-hardening audit, and Python/AI job-search automation.
 - Preferences: Open to fully remote roles and willing to relocate for the right opportunity.
 """
 
@@ -153,13 +154,12 @@ def process_and_sync(df):
     gc = gspread.service_account(filename=CREDENTIALS_FILE)
     worksheet = gc.open_by_url(SPREADSHEET_URL).sheet1
     
-    # Grab existing data from the sheet to prevent re-processing
     all_sheet_rows = worksheet.get_all_values()
     existing_urls = set()
     existing_jobs_set = set()
     
     if len(all_sheet_rows) > 1:
-        for row in all_sheet_rows[1:]: # Skip header
+        for row in all_sheet_rows[1:]:
             if len(row) >= 3:
                 url_val = row[4].strip().lower() if len(row) > 4 else ""
                 comp_val = row[1].strip().lower() if len(row) > 1 else ""
@@ -170,13 +170,11 @@ def process_and_sync(df):
                 if comp_val and role_val:
                     existing_jobs_set.add((comp_val, role_val))
 
-    # Clean incoming dataframe
     df = df.drop_duplicates(subset=['URL'])
     df['temp_comp'] = df['Company'].str.lower().str.strip()
     df['temp_role'] = df['Role'].str.lower().str.strip()
     df['temp_url'] = df['URL'].str.lower().str.strip()
 
-    # Filter out jobs that match existing URLs OR existing Company+Role pairs
     filtered_jobs = []
     for _, row in df.iterrows():
         is_url_dup = row['temp_url'] in existing_urls
@@ -217,8 +215,9 @@ def process_and_sync(df):
             1. DO NOT use generic introductory templates like "Resolved complex hardware/software issues".
             2. Vary the sentence structure of every single bullet point.
             3. Use the exact keywords found in the Job Description text provided above.
+            4. Do not claim tools, technologies, certifications, or experience that are not present in the Candidate Background.
             
-            Return JSON strictly formatted: {{"email_subject": "...", "cold_email": "100-word email highlighting Cloud/Networking and 95% CSAT", "resume_bullets": "• Bullet 1\\n• Bullet 2\\n• Bullet 3"}}
+            Return JSON strictly formatted: {{"email_subject": "...", "cold_email": "100-word email highlighting verified technical experience", "resume_bullets": "• Bullet 1\\n• Bullet 2\\n• Bullet 3"}}
             """
             
             res = json.loads(client.models.generate_content(model=MODEL_NAME, contents=prompt).text.replace("```json", "").replace("```", "").strip())
