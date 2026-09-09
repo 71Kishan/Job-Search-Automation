@@ -39,7 +39,7 @@ The project is built around Kishan Panchal's current career direction: **System 
 ┌──────────────────────┐
 │ Google Sheets        │
 │ Central application  │
-│ tracker               │
+│ tracker              │
 └──────────────────────┘
 ```
 
@@ -76,7 +76,7 @@ This is important because the purpose of the AI layer is to **tailor genuine exp
 
 **Python · Playwright · Requests · BeautifulSoup4 · Pandas · Google Gemini API · gspread · Google Sheets API · Windows Task Scheduler**
 
-The Gemini integration uses Google's official `google-genai` Python SDK and the Interactions API. citeturn0search4turn0search9
+The Gemini integration uses Google's official `google-genai` Python SDK and the Interactions API.
 
 ## Project structure
 
@@ -111,7 +111,7 @@ setx GEMINI_API_KEY "YOUR_API_KEY"
 
 Restart the terminal after using `setx` so the new environment variable is available to Python.
 
-Google's current Gemini documentation recommends the official `google-genai` SDK and environment-variable based API-key handling. citeturn0search0turn0search9
+Google's current Gemini documentation recommends the official `google-genai` SDK and environment-variable based API-key handling.
 
 ## Installation
 
