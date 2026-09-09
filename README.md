@@ -32,7 +32,7 @@ The project is built around Kishan Panchal's current career direction: **System 
            ↓
 ┌──────────────────────┐
 │ Gemini analysis      │
-│ Relevance + tailored │
+│ Batched tailored     │
 │ application content  │
 └──────────┬───────────┘
            ↓
@@ -47,15 +47,18 @@ The project is built around Kishan Panchal's current career direction: **System 
 
 - **Multi-platform job discovery** across Naukri, Indeed, LinkedIn, and WorkIndia.
 - **Fresh-job collection** focused on the configured search keywords and location.
-- **Target-role filtering** to reduce unrelated roles such as sales, HR, finance, and other non-IT positions.
+- **Target-role filtering** to reduce unrelated roles such as sales, HR, finance, and other non-IT positions before AI processing.
 - **Cross-portal deduplication** using normalized URLs and Company + Role combinations.
 - **Historical deduplication** against jobs already present in the Google Sheet.
-- **Job-description extraction** before AI analysis.
-- **AI-assisted tailoring** using a structured candidate profile and strict anti-fabrication instructions.
+- **Priority ranking** toward System Administration, Networking, Infrastructure, and IT Operations roles.
+- **Job-description extraction** before AI analysis, capped to a controlled input size.
+- **Batched AI tailoring** with five jobs per standard Gemini request, reducing unnecessary API calls.
+- **Optional premium processing** for a small number of top-priority jobs; disabled by default.
 - **Application content generation** including email subjects, personalized cold emails, and resume bullets.
-- **Google Sheets synchronization** for centralized job tracking and follow-up status.
+- **Strict anti-fabrication instructions** so generated content stays grounded in verified candidate information.
+- **Google Sheets synchronization** that appends new rows without overwriting the existing tracker.
 - **Windows Task Scheduler compatibility** for recurring automated runs.
-- **Environment-based secret handling** so API credentials are not stored in source code.
+- **Environment-based secret handling** so API credentials and private local configuration are not stored in source code.
 
 ## AI safety / accuracy rules
 
@@ -93,15 +96,19 @@ Job-Search-Automation/
 
 The repository intentionally does **not** contain personal credentials, Google service-account files, or Gemini API keys.
 
-Configure the following on the local machine instead:
+The pipeline reads these values from environment variables:
 
 ```text
-GEMINI_API_KEY
-GEMINI_MODEL       (optional)
-BASE_DIR           (local configuration)
-SPREADSHEET_URL    (local configuration)
-service_account.json
+GEMINI_API_KEY                  Required Gemini API key
+GOOGLE_SHEET_URL                Required private Google Sheet URL
+JOB_SEARCH_BASE_DIR             Optional local working directory
+GOOGLE_SERVICE_ACCOUNT_FILE     Optional service-account JSON path
+GEMINI_MODEL                    Optional standard Gemini model override
+PREMIUM_MODEL_ENABLED           Optional; defaults to false
+PREMIUM_GEMINI_MODEL            Optional premium model override
 ```
+
+If `JOB_SEARCH_BASE_DIR` is not set, the current working directory is used. If `GOOGLE_SERVICE_ACCOUNT_FILE` is not set, the script looks for `service_account.json` inside that base directory.
 
 For Windows, the Gemini key can be stored as an environment variable:
 
@@ -109,9 +116,9 @@ For Windows, the Gemini key can be stored as an environment variable:
 setx GEMINI_API_KEY "YOUR_API_KEY"
 ```
 
-Restart the terminal after using `setx` so the new environment variable is available to Python.
+For the private Google Sheet, configure `GOOGLE_SHEET_URL` locally rather than committing it to the repository.
 
-Google's current Gemini documentation recommends the official `google-genai` SDK and environment-variable based API-key handling.
+Restart the terminal after using `setx` so the new environment variable is available to Python.
 
 ## Installation
 
